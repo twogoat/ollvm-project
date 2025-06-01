@@ -12,9 +12,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Obfuscation/Flattening.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Utils.h"
-#include "llvm/InitializePasses.h"
+#include <random>
 
 #define DEBUG_TYPE "flattening"
 
@@ -52,7 +53,28 @@ bool Flattening::runOnFunction(Function &F) {
   return false;
 }
 
+std::vector<int> generateRandomArray(int n) {
+  // 创建一个包含从0到n的数字的数组
+  std::vector<int> numbers(n + 1);  // 包含0到n，所以大小是n+1
+  for (int i = 0; i <= n; ++i) {
+    numbers[i] = i;
+  }
+
+  // 创建一个随机数生成器
+  std::random_device rd;
+  std::mt19937 g(rd());
+
+  // 打乱数组
+  std::shuffle(numbers.begin(), numbers.end(), g);
+
+  return numbers;  // 返回随机排列的数组
+}
+
 bool Flattening::flatten(Function *f) {
+
+  const char* function_name = f->getName().data();
+  printf("[fla] function => %s \n", function_name);
+
   std::vector<BasicBlock *> origBB;
   BasicBlock *loopEntry;
   BasicBlock *loopEnd;
@@ -140,18 +162,35 @@ bool Flattening::flatten(Function *f) {
   // loopEnd jump to loopEntry
   BranchInst::Create(loopEntry, loopEnd);
 
+
   BasicBlock *swDefault =
       BasicBlock::Create(f->getContext(), "switchDefault", f, loopEnd);
   BranchInst::Create(loopEnd, swDefault);
+
+
+
+  //Value
+  //CmpInst::Create(Instruction::ICmp, CmpInst::ICMP_EQ, load, load, "CmpInst", cmpDefault);
 
   // Create switch instruction itself and set condition
   switchI = SwitchInst::Create(&*f->begin(), swDefault, 0, loopEntry);
   switchI->setCondition(load);
 
+  //switchI->setCondition()
+  //BasicBlock *cmpDefault = nullptr;
   // Remove branch jump from 1st BB and make a jump to the while
   f->begin()->getTerminator()->eraseFromParent();
 
   BranchInst::Create(loopEntry, &*f->begin());
+
+  //创建新的If块列表
+  std::vector<BasicBlock *> cmpDefaultList;
+
+  for(int i = 0; i < origBB.size(); i++) {
+    cmpDefaultList.push_back(BasicBlock::Create(f->getContext(), "cmpDefault", f, nullptr));
+  }
+
+  int count = 0;
 
   // Put all BB in the switch
   for (std::vector<BasicBlock *>::iterator b = origBB.begin();
@@ -166,9 +205,24 @@ bool Flattening::flatten(Function *f) {
     numCase = cast<ConstantInt>(ConstantInt::get(
         switchI->getCondition()->getType(),
         llvm::cryptoutils->scramble32(switchI->getNumCases(), scrambling_key)));
+
     switchI->addCase(numCase, i);
+
+    //这里还是要使用load，不然变编译起来
+    load = new LoadInst(switchVar->getType()->getElementType(), switchVar, "switchVar", loopEntry);
+    //在每一个if块中，设置跳转的指令
+    CmpInst* cmpI = CmpInst::Create(Instruction::ICmp, CmpInst::ICMP_EQ, load, numCase, "CmpInst", cmpDefaultList[count]);
+    if(count < origBB.size() - 1) {
+      BranchInst::Create(i, cmpDefaultList[count + 1], cmpI, cmpDefaultList[count]);
+    } else {
+      BranchInst::Create(i, loopEnd, cmpI, cmpDefaultList[count]);
+    }
+
+    count++;
   }
 
+  count = 0;
+  std::vector<int> randomArray = generateRandomArray(origBB.size() - 1);
   // Recalculate switchVar
   for (std::vector<BasicBlock *>::iterator b = origBB.begin();
        b != origBB.end(); ++b) {
@@ -199,7 +253,8 @@ bool Flattening::flatten(Function *f) {
 
       // Update switchVar and jump to the end of loop
       new StoreInst(numCase, load->getPointerOperand(), i);
-      BranchInst::Create(loopEnd, i);
+      BranchInst::Create(cmpDefaultList[randomArray[count]], i);
+      count++;
       continue;
     }
 
@@ -237,11 +292,13 @@ bool Flattening::flatten(Function *f) {
 
       // Update switchVar and jump to the end of loop
       new StoreInst(sel, load->getPointerOperand(), i);
-      BranchInst::Create(loopEnd, i);
+      BranchInst::Create(cmpDefaultList[randomArray[count]], i);
+      count++;
       continue;
     }
   }
-
+  switchI->eraseFromParent();
+  BranchInst::Create(cmpDefaultList[0], loopEntry);
   fixStack(f);
 
   return true;
