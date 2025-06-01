@@ -209,7 +209,7 @@ bool Flattening::flatten(Function *f) {
     switchI->addCase(numCase, i);
 
     //这里还是要使用load，不然变编译起来
-    load = new LoadInst(switchVar->getType()->getElementType(), switchVar, "switchVar", loopEntry);
+    load = new LoadInst(switchVar->getType()->getElementType(), switchVar, "switchVar", cmpDefaultList[count]);
     //在每一个if块中，设置跳转的指令
     CmpInst* cmpI = CmpInst::Create(Instruction::ICmp, CmpInst::ICMP_EQ, load, numCase, "CmpInst", cmpDefaultList[count]);
     if(count < origBB.size() - 1) {
